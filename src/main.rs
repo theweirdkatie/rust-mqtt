@@ -1,58 +1,35 @@
-//! This is a simple asynchronous MQTT publisher using SSL/TSL secured
-//! connection via the Paho MQTT Rust Library.
-
 use crossterm::{
+    cursor::MoveToNextLine,
     event::{self, Event, KeyCode},
     terminal, ExecutableCommand,
 };
-use futures::executor::block_on;
-use paho_mqtt as mqtt;
-use std::{io, time::Duration};
+use rumqtt::{self, MqttClient, MqttOptions, QoS, SecurityOptions};
+use std::{error::Error, io, time::Duration};
 
-/////////////////////////////////////////////////////////////////////////////
+fn main() -> Result<(), Box<dyn Error>> {
+    let host = "a488e908b9e2447a8bfbedb955b8f704.s2.eu.hivemq.cloud";
 
-fn main() -> mqtt::Result<()> {
-    // Initialize the logger from the environment
-    env_logger::init();
+    let username = "kstedman_mqtt".to_string();
+    let password = "MQTTpasswordPERSONAL".to_string();
+    let topic = "test/topic";
 
-    const ROOT_CA_PATH: &str = "certs/AmazonRootCA1.pem";
-    const CERTIFICATE_PATH: &str = "certs/certificate.pem.crt";
-    const PRIVATE_KEY_PATH: &str = "certs/private.pem.key";
-    const ALPN_PROTOCOLS: &[&str] = &["x-amzn-mqtt-ca"];
+    let conn_opts = MqttOptions::new("test-crate1", host, 8883)
+        .set_security_opts(SecurityOptions::UsernamePassword(username, password))
+        .set_clean_session(true);
 
-    let host = "ssl://a33dx7mb3rdv3r-ats.iot.us-west-2.amazonaws.com:443".to_string();
+    let mut stdout = io::stdout();
+    terminal::enable_raw_mode()?;
+    // stdout.execute(terminal::EnterAlternateScreen).unwrap();
 
-    println!("Connecting to host: '{}'", host);
+    let result = MqttClient::start(conn_opts);
 
-    // Run the client in an async block
+    if let Ok((mut client, notifications)) = result {
+        println!("Connecting to host: '{}' at 8883", host);
+        client.subscribe(topic, QoS::AtLeastOnce).unwrap();
 
-    if let Err(err) = block_on(async {
-        // Create a client & define connect options
-        let cli = mqtt::CreateOptionsBuilder::new()
-            .server_uri(&host)
-            .client_id("ssl_publish_rs")
-            .max_buffered_messages(100)
-            .create_client()?;
-
-        let ssl_opts = mqtt::SslOptionsBuilder::new()
-            .trust_store(ROOT_CA_PATH)?
-            .key_store(CERTIFICATE_PATH)?
-            .private_key(PRIVATE_KEY_PATH)?
-            .alpn_protos(ALPN_PROTOCOLS)
-            .enable_server_cert_auth(false)
-            .verify(true)
-            .finalize();
-
-        let conn_opts = mqtt::ConnectOptionsBuilder::new()
-            .clean_session(true)
-            .ssl_options(ssl_opts)
-            .finalize();
-
-        let rsp = cli.connect(conn_opts).await.expect("could not connect");
-
-        let mut stdout = io::stdout();
-        terminal::enable_raw_mode()?;
-        stdout.execute(terminal::EnterAlternateScreen)?;
+        for notification in notifications {
+            println!("{:?}", notification)
+        }
 
         'msg_loop: loop {
             while event::poll(Duration::default())? {
@@ -66,24 +43,22 @@ fn main() -> mqtt::Result<()> {
                             } else {
                                 format!("{:?}", key_event.code)
                             };
-                            let msg = mqtt::MessageBuilder::new()
-                                .topic("test")
-                                .payload(format!("{{\"Key pressed\": \"{}\"}}", key))
-                                .qos(1)
-                                .finalize();
+                            let msg = format!("{{\"Key pressed\": \"{}\"}}", key);
                             println!("Sending msg: {}", msg);
-                            cli.publish(msg).await?;
+                            client.publish(topic, QoS::AtLeastOnce, false, msg).unwrap();
+                            stdout.execute(MoveToNextLine(1)).unwrap();
                         }
                     }
                 }
             }
         }
-        cli.disconnect(None).await?;
-        stdout.execute(terminal::LeaveAlternateScreen)?;
-
-        Ok::<(), mqtt::Error>(())
-    }) {
-        eprintln!("{}", err);
+        client.shutdown().unwrap();
+    } else {
+        if let Err(error) = &result {
+            println!("Err: {}", error);
+        }
     }
+    // stdout.execute(terminal::LeaveAlternateScreen)?;
+    terminal::disable_raw_mode().unwrap();
     Ok(())
 }
